@@ -12,7 +12,7 @@ The XSMTP protocol **MUST** be implemented on top of the standard TCP transport 
 
 All multibyte numbers use Big Endian format.
 
-All variable-length integers ("varints") are encoded/decoded as defined in QUIC (RFC 9000). *Note: While QUIC varint is mentioned for technical completeness, for simplicity in XSMTP's TCP-based implementation, standard integer types (e.g., uint32, uint16, varint as needed) can be used directly.*
+All variable-length integers ("varints") are encoded/decoded as defined in QUIC (RFC 9000). 
 
 **3. Masquerading as SMTPS - Detailed Process**
 
