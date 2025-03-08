@@ -76,7 +76,7 @@ XSMTP (eXtended SMTPS Proxy) is a lightweight proxy protocol designed to circumv
 
 ## Protocol Details
 
-For detailed information about the XSMTP protocol, message formats, and handshake procedures, please refer to the [XSMTP Protocol Specification](spec.md) (link to specification document, if available).
+For detailed information about the XSMTP protocol, message formats, and handshake procedures, please refer to the [XSMTP Protocol Specification](SPEC.md).
 
 ## Security Considerations
 
