@@ -1,0 +1,112 @@
+name: Release XSMTP
+
+on:
+  push:
+    tags:
+      - 'v*' # 触发标签格式为 v1.0.0 这样的版本号
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Get version
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build for multiple platforms
+        run: |
+          mkdir -p bin
+          
+          # Linux
+          # Server
+          GOOS=linux GOARCH=amd64 go build -o bin/xsmtp-server-linux-amd64 -ldflags "-s -w" server.go protocol.go xsmtp.go
+          GOOS=linux GOARCH=arm64 go build -o bin/xsmtp-server-linux-arm64 -ldflags "-s -w" server.go protocol.go xsmtp.go
+          # Client
+          GOOS=linux GOARCH=amd64 go build -o bin/xsmtp-client-linux-amd64 -ldflags "-s -w" client.go protocol.go xsmtp.go
+          GOOS=linux GOARCH=arm64 go build -o bin/xsmtp-client-linux-arm64 -ldflags "-s -w" client.go protocol.go xsmtp.go
+
+          # Windows
+          # Server
+          GOOS=windows GOARCH=amd64 go build -o bin/xsmtp-server-windows-amd64.exe -ldflags "-s -w" server.go protocol.go xsmtp.go
+          GOOS=windows GOARCH=arm64 go build -o bin/xsmtp-server-windows-arm64.exe -ldflags "-s -w" server.go protocol.go xsmtp.go
+          # Client
+          GOOS=windows GOARCH=amd64 go build -o bin/xsmtp-client-windows-amd64.exe -ldflags "-s -w" client.go protocol.go xsmtp.go
+          GOOS=windows GOARCH=arm64 go build -o bin/xsmtp-client-windows-arm64.exe -ldflags "-s -w" client.go protocol.go xsmtp.go
+
+          # macOS
+          # Server
+          GOOS=darwin GOARCH=amd64 go build -o bin/xsmtp-server-darwin-amd64 -ldflags "-s -w" server.go protocol.go xsmtp.go
+          GOOS=darwin GOARCH=arm64 go build -o bin/xsmtp-server-darwin-arm64 -ldflags "-s -w" server.go protocol.go xsmtp.go
+          # Client
+          GOOS=darwin GOARCH=amd64 go build -o bin/xsmtp-client-darwin-amd64 -ldflags "-s -w" client.go protocol.go xsmtp.go
+          GOOS=darwin GOARCH=arm64 go build -o bin/xsmtp-client-darwin-arm64 -ldflags "-s -w" client.go protocol.go xsmtp.go
+
+          # Create zip archives
+          cd bin
+          for file in *; do
+            if [ -f "$file" ] && [ ! -f "${file}.zip" ]; then
+              zip "${file}.zip" "$file"
+            fi
+          done
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          name: XSMTP ${{ steps.get_version.outputs.version }}
+          tag_name: ${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: false
+          body: |
+            XSMTP Release ${{ steps.get_version.outputs.version }}
+            Release Date: ${{ steps.date.outputs.date }}
+
+            ### 包含内容:
+            - XSMTP 服务端程序
+            - XSMTP 客户端程序
+            - 支持的平台: Windows, Linux, macOS
+            - 支持的架构: x86_64 (amd64), ARM64
+
+            ### 下载说明:
+            - Windows用户选择 .exe.zip 结尾的文件
+            - Linux用户选择 linux-* 的文件
+            - macOS用户选择 darwin-* 的文件
+            - ARM设备选择 arm64 的文件
+            - x86_64设备选择 amd64 的文件
+
+            ### 文件校验:
+            所有文件的 SHA256 校验和可在 SHA256SUMS.txt 中查看
+          files: |
+            bin/*.zip
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd bin
+          sha256sum *.zip > SHA256SUMS.txt
+
+      - name: Upload SHA256SUMS
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: bin/SHA256SUMS.txt
+          tag_name: ${{ steps.get_version.outputs.version }}
