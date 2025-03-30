@@ -5,11 +5,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/textproto"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Client represents an XSMTP client
