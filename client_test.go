@@ -24,15 +24,134 @@ type mockServer struct {
     cert     tls.Certificate
 }
 
+func (s *mockServer) handleConnection(t *testing.T, conn net.Conn) {
+    defer conn.Close()
+
+    // 发送初始问候语
+    if _, err := fmt.Fprintf(conn, "220 smtp.gmail.com ESMTP ready\r\n"); err != nil {
+        t.Errorf("Failed to send greeting: %v", err)
+        return
+    }
+
+    scanner := bufio.NewScanner(conn)
+    for scanner.Scan() {
+        line := scanner.Text()
+        t.Logf("Received: %s", line)  // 添加调试日志
+
+        switch {
+        case strings.HasPrefix(line, "EHLO"):
+            // 发送EHLO响应，确保包含STARTTLS
+            responses := []string{
+                "250-smtp.gmail.com",
+                "250-SIZE 35882577",
+                "250-8BITMIME",
+                "250-STARTTLS",
+                "250-AUTH PLAIN LOGIN",
+                "250 ENHANCEDSTATUSCODES",
+            }
+            for _, resp := range responses {
+                if _, err := fmt.Fprintf(conn, "%s\r\n", resp); err != nil {
+                    t.Errorf("Failed to send EHLO response: %v", err)
+                    return
+                }
+            }
+
+        case line == "STARTTLS":
+            if _, err := fmt.Fprintf(conn, "220 2.0.0 Ready to start TLS\r\n"); err != nil {
+                t.Errorf("Failed to send STARTTLS response: %v", err)
+                return
+            }
+
+            // 升级到TLS连接
+            tlsConn := tls.Server(conn, &tls.Config{
+                Certificates: []tls.Certificate{s.cert},
+            })
+            if err := tlsConn.Handshake(); err != nil {
+                t.Errorf("TLS handshake failed: %v", err)
+                return
+            }
+            
+            // 更新连接和扫描器
+            conn = tlsConn
+            scanner = bufio.NewScanner(conn)
+
+        case strings.HasPrefix(line, "AUTH PLAIN"):
+            if _, err := fmt.Fprintf(conn, "235 2.7.0 Authentication successful\r\n"); err != nil {
+                t.Errorf("Failed to send AUTH response: %v", err)
+                return
+            }
+            return // 认证成功后返回
+
+        case line == "QUIT":
+            if _, err := fmt.Fprintf(conn, "221 2.0.0 Bye\r\n"); err != nil {
+                t.Errorf("Failed to send QUIT response: %v", err)
+            }
+            return
+        }
+    }
+
+    if err := scanner.Err(); err != nil {
+        t.Errorf("Scanner error: %v", err)
+    }
+}
+
+// 修改 generateTestCertificate 函数以返回一个有效的证书
+func generateTestCertificate() (tls.Certificate, error) {
+    // 生成私钥
+    privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+    if err != nil {
+        return tls.Certificate{}, err
+    }
+
+    // 创建自签名证书模板
+    template := x509.Certificate{
+        SerialNumber: big.NewInt(1),
+        Subject: pkix.Name{
+            CommonName: "localhost",
+        },
+        DNSNames:              []string{"localhost"},
+        NotBefore:            time.Now(),
+        NotAfter:             time.Now().Add(24 * time.Hour),
+        KeyUsage:             x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+        ExtKeyUsage:          []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+        BasicConstraintsValid: true,
+    }
+
+    // 创建证书
+    derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+    if err != nil {
+        return tls.Certificate{}, err
+    }
+
+    // 将证书和私钥转换为PEM格式
+    certPEM := pem.EncodeToMemory(&pem.Block{
+        Type:  "CERTIFICATE",
+        Bytes: derBytes,
+    })
+    keyPEM := pem.EncodeToMemory(&pem.Block{
+        Type:  "RSA PRIVATE KEY",
+        Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+    })
+
+    // 创建TLS证书
+    cert, err := tls.X509KeyPair(certPEM, keyPEM)
+    if err != nil {
+        return tls.Certificate{}, err
+    }
+
+    return cert, nil
+}
+
+// 更新 newMockServer 函数
 func newMockServer(t *testing.T) *mockServer {
     cert, err := generateTestCertificate()
     if err != nil {
-        t.Fatalf("Failed to generate certificate: %v", err)
+        t.Fatalf("Failed to generate test certificate: %v", err)
     }
 
     listener, err := net.Listen("tcp", "127.0.0.1:0")
     if err != nil {
-        t.Fatalf("Failed to create mock server: %v", err)
+        t.Fatalf("Failed to create listener: %v", err)
     }
 
     server := &mockServer{
@@ -43,6 +162,37 @@ func newMockServer(t *testing.T) *mockServer {
 
     go server.serve(t)
     return server
+}
+
+func TestClientConnect(t *testing.T) {
+    server := newMockServer(t)
+    defer server.close()
+
+    host, port, _ := net.SplitHostPort(server.listener.Addr().String())
+    portNum := 0
+    fmt.Sscanf(port, "%d", &portNum)
+
+    config := &ClientConfig{
+        Protocol:   "xsmtp",
+        ServerIP:   host,
+        ServerPort: portNum,
+        Username:   "test",
+        Password:   "test123",
+    }
+
+    client := NewClient(config)
+
+    // 添加调试日志
+    t.Logf("Connecting to %s:%d", host, portNum)
+
+    // 设置较短的超时时间
+    if err := client.Connect(); err != nil {
+        t.Fatalf("Connect() error = %v", err)
+    }
+
+    if !client.isXSMTP {
+        t.Error("Connect() client should be in XSMTP mode")
+    }
 }
 
 func (s *mockServer) serve(t *testing.T) {
@@ -58,98 +208,10 @@ func (s *mockServer) serve(t *testing.T) {
     }
 }
 
-func (s *mockServer) handleConnection(t *testing.T, conn net.Conn) {
-    defer conn.Close()
-
-    // 发送初始问候语
-    fmt.Fprintf(conn, "220 smtp.gmail.com ESMTP ready\r\n")
-
-    scanner := bufio.NewScanner(conn)
-    ehloSent := false
-    
-    for scanner.Scan() {
-        line := scanner.Text()
-        switch {
-        case strings.HasPrefix(line, "EHLO"):
-            if !ehloSent {
-                fmt.Fprintf(conn, "250-smtp.gmail.com\r\n")
-                fmt.Fprintf(conn, "250-SIZE 35882577\r\n")
-                fmt.Fprintf(conn, "250-8BITMIME\r\n")
-                fmt.Fprintf(conn, "250-STARTTLS\r\n")
-                fmt.Fprintf(conn, "250-AUTH PLAIN LOGIN\r\n")
-                fmt.Fprintf(conn, "250 ENHANCEDSTATUSCODES\r\n")
-                ehloSent = true
-            } else {
-                // 第二次 EHLO (TLS 后)
-                fmt.Fprintf(conn, "250-smtp.gmail.com\r\n")
-                fmt.Fprintf(conn, "250-SIZE 35882577\r\n")
-                fmt.Fprintf(conn, "250-8BITMIME\r\n")
-                fmt.Fprintf(conn, "250-AUTH PLAIN LOGIN\r\n")
-                fmt.Fprintf(conn, "250 ENHANCEDSTATUSCODES\r\n")
-            }
-            
-        case line == "STARTTLS":
-            fmt.Fprintf(conn, "220 2.0.0 Ready to start TLS\r\n")
-            
-            // 升级到TLS连接
-            tlsConn := tls.Server(conn, &tls.Config{
-                Certificates: []tls.Certificate{s.cert},
-            })
-            if err := tlsConn.Handshake(); err != nil {
-                t.Errorf("TLS handshake failed: %v", err)
-                return
-            }
-            conn = tlsConn
-            scanner = bufio.NewScanner(conn)
-            
-        case strings.HasPrefix(line, "AUTH PLAIN"):
-            fmt.Fprintf(conn, "235 2.7.0 Authentication successful\r\n")
-            
-        case line == "QUIT":
-            fmt.Fprintf(conn, "221 2.0.0 Bye\r\n")
-            return
-        }
-    }
-}
 
 func (s *mockServer) close() {
     s.listener.Close()
     <-s.done
-}
-
-// generateTestCertificate 生成用于测试的TLS证书
-func generateTestCertificate() (tls.Certificate, error) {
-    key, err := rsa.GenerateKey(rand.Reader, 2048)
-    if err != nil {
-        return tls.Certificate{}, fmt.Errorf("failed to generate private key: %v", err)
-    }
-
-    template := x509.Certificate{
-        SerialNumber: big.NewInt(1),
-        Subject: pkix.Name{
-            CommonName: "localhost",
-        },
-        NotBefore:             time.Now(),
-        NotAfter:              time.Now().Add(time.Hour),
-        KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-        ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-        BasicConstraintsValid: true,
-    }
-
-    certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-    if err != nil {
-        return tls.Certificate{}, fmt.Errorf("failed to create certificate: %v", err)
-    }
-
-    certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-    keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-
-    cert, err := tls.X509KeyPair(certPEM, keyPEM)
-    if err != nil {
-        return tls.Certificate{}, fmt.Errorf("failed to create X509 key pair: %v", err)
-    }
-
-    return cert, nil
 }
 
 // mockConn 实现完整的 net.Conn 接口
@@ -236,36 +298,6 @@ func TestNewClient(t *testing.T) {
 
     if client.isXSMTP {
         t.Error("NewClient() isXSMTP should be false")
-    }
-}
-
-func TestClientConnect(t *testing.T) {
-    // 启动模拟服务器
-    server := newMockServer(t)
-    defer server.close()
-
-    host, port, _ := net.SplitHostPort(server.listener.Addr().String())
-    portNum := 0
-    fmt.Sscanf(port, "%d", &portNum)
-
-    config := &ClientConfig{
-        Protocol:   "xsmtp",
-        ServerIP:   host,
-        ServerPort: portNum,
-        Username:   "test",
-        Password:   "test123",
-    }
-
-    client := NewClient(config)
-
-    // 测试连接
-    err := client.Connect()
-    if err != nil {
-        t.Fatalf("Connect() error = %v", err)
-    }
-
-    if !client.isXSMTP {
-        t.Error("Connect() client should be in XSMTP mode")
     }
 }
 
