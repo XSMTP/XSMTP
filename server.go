@@ -410,3 +410,16 @@ func (s *Server) handleUDPResponses(sessionID uint32, session *udpSession, clien
         packetID++
     }
 }
+
+// forceCleanupUDPSessions forces cleanup of inactive UDP sessions (for testing)
+func (s *Server) forceCleanupUDPSessions() {
+    s.udpMu.Lock()
+    now := time.Now()
+    for id, session := range s.udpSessions {
+        if now.Sub(session.lastUsed) > 10*time.Minute {
+            session.conn.Close()
+            delete(s.udpSessions, id)
+        }
+    }
+    s.udpMu.Unlock()
+}
