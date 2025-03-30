@@ -16,11 +16,11 @@ import (
 type Client struct {
     config     *ClientConfig
     conn       net.Conn
-    textConn   *textprto.Conn
+    textConn   *textproto.Conn  // 修复拼写错误：textprto -> textproto
     udpCounter uint32
     mu         sync.Mutex
     isXSMTP    bool // Flag to indicate if we've switched to XSMTP mode
-    ehloResp   string // 添加此字段存储最后一次EHLO响应
+    ehloResp   string // 存储最后一次EHLO响应
 }
 
 // NewClient creates a new XSMTP client with the given configuration
@@ -30,99 +30,6 @@ func NewClient(config *ClientConfig) *Client {
         udpCounter: 0,
         isXSMTP:    false,
     }
-}
-
-// Connect connects to the XSMTP server, performs the SMTP handshake,
-// and authenticates using the provided credentials
-func (c *Client) Connect() error {
-	// Connect to the server
-	addr := fmt.Sprintf("%s:%d", c.config.ServerIP, c.config.ServerPort)
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to connect to server: %w", err)
-	}
-	c.conn = conn
-	c.textConn = textproto.NewConn(conn)
-	
-	// Read the initial greeting
-	code, msg, err := c.textConn.ReadResponse(220)
-	if err != nil {
-		c.conn.Close()
-		return fmt.Errorf("failed to read server greeting: %w", err)
-	}
-	if code != 220 {
-		c.conn.Close()
-		return fmt.Errorf("unexpected server greeting: %d %s", code, msg)
-	}
-	
-	// Send EHLO
-	if err := c.ehlo(); err != nil {
-		c.conn.Close()
-		return fmt.Errorf("EHLO failed: %w", err)
-	}
-	
-	// Check if STARTTLS is supported
-	if !c.hasExtension("STARTTLS") {
-		c.conn.Close()
-		return errors.New("server does not support STARTTLS")
-	}
-	
-	// Send STARTTLS
-	id, err := c.textConn.Cmd("STARTTLS")
-	if err != nil {
-		c.conn.Close()
-		return fmt.Errorf("failed to send STARTTLS command: %w", err)
-	}
-	c.textConn.StartResponse(id)
-	code, msg, err = c.textConn.ReadResponse(220)
-	c.textConn.EndResponse(id)
-	if err != nil {
-		c.conn.Close()
-		return fmt.Errorf("STARTTLS failed: %w", err)
-	}
-	
-	// Upgrade connection to TLS
-	tlsConn := tls.Client(c.conn, &tls.Config{
-		ServerName: c.config.ServerIP,
-		MinVersion: tls.VersionTLS12,
-	})
-	if err := tlsConn.Handshake(); err != nil {
-		c.conn.Close()
-		return fmt.Errorf("TLS handshake failed: %w", err)
-	}
-	c.conn = tlsConn
-	c.textConn = textproto.NewConn(tlsConn)
-	
-	// Send EHLO again over TLS
-	if err := c.ehlo(); err != nil {
-		c.conn.Close()
-		return fmt.Errorf("EHLO after STARTTLS failed: %w", err)
-	}
-	
-	// Check if AUTH is supported
-	if !c.hasExtension("AUTH") {
-		c.conn.Close()
-		return errors.New("server does not support AUTH")
-	}
-	
-	// Authenticate using PLAIN
-	id, err = c.textConn.Cmd("AUTH PLAIN %s", 
-		base64.StdEncoding.EncodeToString([]byte("\x00"+c.config.Username+"\x00"+c.config.Password)))
-	if err != nil {
-		c.conn.Close()
-		return fmt.Errorf("failed to send AUTH command: %w", err)
-	}
-	c.textConn.StartResponse(id)
-	code, msg, err = c.textConn.ReadResponse(235)
-	c.textConn.EndResponse(id)
-	if err != nil {
-		c.conn.Close()
-		return fmt.Errorf("authentication failed: %w", err)
-	}
-	
-	// Now we're authenticated and in XSMTP Data Forwarding Mode
-	c.isXSMTP = true
-	return nil
 }
 
 // ehlo sends an EHLO command to the server
