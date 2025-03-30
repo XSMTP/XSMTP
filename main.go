@@ -1,4 +1,4 @@
-package main
+package xsmtp
 
 import (
     "encoding/json"
