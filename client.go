@@ -24,11 +24,12 @@ type Client struct {
 
 // NewClient creates a new XSMTP client with the given configuration
 func NewClient(config *ClientConfig) *Client {
-	return &Client{
-		config:     config,
-		udpCounter: 0,
-		isXSMTP:    false,
-	}
+    return &Client{
+        config:     config,
+        udpCounter: 0,
+        isXSMTP:    false,
+        extensions: make(map[string]string),
+    }
 }
 
 // Connect connects to the XSMTP server, performs the SMTP handshake,
@@ -124,38 +125,150 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// ehlo sends an EHLO command to the server
+// ehlo sends an EHLO command to the server and stores the extensions
 func (c *Client) ehlo() error {
-	id, err := c.textConn.Cmd("EHLO localhost")
-	if err != nil {
-		return err
-	}
-	c.textConn.StartResponse(id)
-	_, _, err = c.textConn.ReadResponse(250)
-	c.textConn.EndResponse(id)
-	return err
+    id, err := c.textConn.Cmd("EHLO localhost")
+    if err != nil {
+        return err
+    }
+    
+    c.textConn.StartResponse(id)
+    defer c.textConn.EndResponse(id)
+    
+    code, msg, err := c.textConn.ReadResponse(250)
+    if err != nil {
+        return err
+    }
+    
+    // 清除旧的扩展
+    c.extensions = make(map[string]string)
+    
+    // 解析并存储扩展
+    for _, line := range strings.Split(msg, "\n") {
+        line = strings.TrimSpace(line)
+        if line == "" {
+            continue
+        }
+        
+        // 移除前缀
+        if strings.HasPrefix(line, "250-") {
+            line = line[4:]
+        } else if strings.HasPrefix(line, "250 ") {
+            line = line[4:]
+        } else {
+            continue
+        }
+        
+        // 分割扩展名和参数
+        parts := strings.SplitN(line, " ", 2)
+        if len(parts) == 1 {
+            c.extensions[parts[0]] = ""
+        } else {
+            c.extensions[parts[0]] = parts[1]
+        }
+    }
+    
+    return nil
 }
 
 // hasExtension checks if the server supports a specific extension
 func (c *Client) hasExtension(ext string) bool {
-	id, err := c.textConn.Cmd("EHLO localhost")
-	if err != nil {
-		return false
-	}
-	c.textConn.StartResponse(id)
-	defer c.textConn.EndResponse(id)
-	
-	_, msg, err := c.textConn.ReadResponse(250)
-	if err != nil {
-		return false
-	}
-	
-	for _, line := range strings.Split(msg, "\n") {
-		if strings.HasPrefix(line, "250-"+ext) || strings.HasPrefix(line, "250 "+ext) {
-			return true
-		}
-	}
-	return false
+    _, exists := c.extensions[ext]
+    return exists
+}
+
+// Connect connects to the XSMTP server, performs the SMTP handshake,
+// and authenticates using the provided credentials
+func (c *Client) Connect() error {
+    // Connect to the server
+    addr := fmt.Sprintf("%s:%d", c.config.ServerIP, c.config.ServerPort)
+    conn, err := net.Dial("tcp", addr)
+    if err != nil {
+        return fmt.Errorf("failed to connect to server: %w", err)
+    }
+    c.conn = conn
+    c.textConn = textproto.NewConn(conn)
+    
+    // Read the initial greeting
+    code, msg, err := c.textConn.ReadResponse(220)
+    if err != nil {
+        c.conn.Close()
+        return fmt.Errorf("failed to read server greeting: %w", err)
+    }
+    if code != 220 {
+        c.conn.Close()
+        return fmt.Errorf("unexpected server greeting: %d %s", code, msg)
+    }
+    
+    // Send EHLO and store extensions
+    if err := c.ehlo(); err != nil {
+        c.conn.Close()
+        return fmt.Errorf("EHLO failed: %w", err)
+    }
+    
+    // Check if STARTTLS is supported
+    if !c.hasExtension("STARTTLS") {
+        c.conn.Close()
+        return errors.New("server does not support STARTTLS")
+    }
+    
+    // Send STARTTLS
+    id, err := c.textConn.Cmd("STARTTLS")
+    if err != nil {
+        c.conn.Close()
+        return fmt.Errorf("failed to send STARTTLS command: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, msg, err = c.textConn.ReadResponse(220)
+    c.textConn.EndResponse(id)
+    if err != nil {
+        c.conn.Close()
+        return fmt.Errorf("STARTTLS failed: %w", err)
+    }
+    
+    // Upgrade connection to TLS
+    tlsConn := tls.Client(c.conn, &tls.Config{
+        ServerName:         c.config.ServerIP,
+        InsecureSkipVerify: true, // 添加此选项用于测试
+        MinVersion:        tls.VersionTLS12,
+    })
+    if err := tlsConn.Handshake(); err != nil {
+        c.conn.Close()
+        return fmt.Errorf("TLS handshake failed: %w", err)
+    }
+    c.conn = tlsConn
+    c.textConn = textproto.NewConn(tlsConn)
+    
+    // Send EHLO again over TLS and store new extensions
+    if err := c.ehlo(); err != nil {
+        c.conn.Close()
+        return fmt.Errorf("EHLO after STARTTLS failed: %w", err)
+    }
+    
+    // Check if AUTH is supported
+    if !c.hasExtension("AUTH") {
+        c.conn.Close()
+        return errors.New("server does not support AUTH")
+    }
+    
+    // Authenticate using PLAIN
+    auth := base64.StdEncoding.EncodeToString([]byte("\x00"+c.config.Username+"\x00"+c.config.Password))
+    id, err = c.textConn.Cmd("AUTH PLAIN %s", auth)
+    if err != nil {
+        c.conn.Close()
+        return fmt.Errorf("failed to send AUTH command: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, msg, err = c.textConn.ReadResponse(235)
+    c.textConn.EndResponse(id)
+    if err != nil {
+        c.conn.Close()
+        return fmt.Errorf("authentication failed: %w", err)
+    }
+    
+    // Now we're authenticated and in XSMTP Data Forwarding Mode
+    c.isXSMTP = true
+    return nil
 }
 
 // CreateTCPProxy creates a TCP proxy connection to the specified address
