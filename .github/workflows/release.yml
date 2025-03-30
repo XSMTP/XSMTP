@@ -35,33 +35,21 @@ jobs:
           mkdir -p bin
           
           # Linux
-          # Server
-          GOOS=linux GOARCH=amd64 go build -o bin/xsmtp-server-linux-amd64 -ldflags "-s -w" server.go protocol.go xsmtp.go
-          GOOS=linux GOARCH=arm64 go build -o bin/xsmtp-server-linux-arm64 -ldflags "-s -w" server.go protocol.go xsmtp.go
-          # Client
-          GOOS=linux GOARCH=amd64 go build -o bin/xsmtp-client-linux-amd64 -ldflags "-s -w" client.go protocol.go xsmtp.go
-          GOOS=linux GOARCH=arm64 go build -o bin/xsmtp-client-linux-arm64 -ldflags "-s -w" client.go protocol.go xsmtp.go
+          GOOS=linux GOARCH=amd64 go build -o bin/xsmtp-linux-amd64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+          GOOS=linux GOARCH=arm64 go build -o bin/xsmtp-linux-arm64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
 
           # Windows
-          # Server
-          GOOS=windows GOARCH=amd64 go build -o bin/xsmtp-server-windows-amd64.exe -ldflags "-s -w" server.go protocol.go xsmtp.go
-          GOOS=windows GOARCH=arm64 go build -o bin/xsmtp-server-windows-arm64.exe -ldflags "-s -w" server.go protocol.go xsmtp.go
-          # Client
-          GOOS=windows GOARCH=amd64 go build -o bin/xsmtp-client-windows-amd64.exe -ldflags "-s -w" client.go protocol.go xsmtp.go
-          GOOS=windows GOARCH=arm64 go build -o bin/xsmtp-client-windows-arm64.exe -ldflags "-s -w" client.go protocol.go xsmtp.go
+          GOOS=windows GOARCH=amd64 go build -o bin/xsmtp-windows-amd64.exe -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+          GOOS=windows GOARCH=arm64 go build -o bin/xsmtp-windows-arm64.exe -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
 
           # macOS
-          # Server
-          GOOS=darwin GOARCH=amd64 go build -o bin/xsmtp-server-darwin-amd64 -ldflags "-s -w" server.go protocol.go xsmtp.go
-          GOOS=darwin GOARCH=arm64 go build -o bin/xsmtp-server-darwin-arm64 -ldflags "-s -w" server.go protocol.go xsmtp.go
-          # Client
-          GOOS=darwin GOARCH=amd64 go build -o bin/xsmtp-client-darwin-amd64 -ldflags "-s -w" client.go protocol.go xsmtp.go
-          GOOS=darwin GOARCH=arm64 go build -o bin/xsmtp-client-darwin-arm64 -ldflags "-s -w" client.go protocol.go xsmtp.go
+          GOOS=darwin GOARCH=amd64 go build -o bin/xsmtp-darwin-amd64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+          GOOS=darwin GOARCH=arm64 go build -o bin/xsmtp-darwin-arm64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
 
           # Create zip archives
           cd bin
           for file in *; do
-            if [ -f "$file" ] && [ ! -f "${file}.zip" ]; then
+            if [ -f "$file" ]; then
               zip "${file}.zip" "$file"
             fi
           done
