@@ -338,9 +338,14 @@ func (s *Server) handleTCPRequest(conn net.Conn) error {
 // handleUDPMessage 处理UDP消息
 func (s *Server) handleUDPMessage(conn net.Conn) error {
     // 读取UDP消息
-    sessionID, packetID, fragmentID, fragmentCount, address, payload, err := ReadUDPMessage(conn)
+    sessionID, _, _, _, address, payload, err := ReadUDPMessage(conn)
     if err != nil {
         return err
+    }
+    
+    // 如果UDP中继被禁用，则直接返回
+    if !s.config.UDPRelay {
+        return nil
     }
     
     // 获取或创建UDP会话
@@ -351,7 +356,7 @@ func (s *Server) handleUDPMessage(conn net.Conn) error {
         udpConn, err := net.ListenPacket("udp", "")
         if err != nil {
             s.udpMu.Unlock()
-            return err
+            return fmt.Errorf("failed to create UDP socket: %w", err)
         }
         
         session = &udpSession{
@@ -369,12 +374,16 @@ func (s *Server) handleUDPMessage(conn net.Conn) error {
     // 解析目标地址
     targetAddr, err := net.ResolveUDPAddr("udp", address)
     if err != nil {
-        return err
+        return fmt.Errorf("failed to resolve UDP address %s: %w", address, err)
     }
     
     // 发送数据
     _, err = session.conn.WriteTo(payload, targetAddr)
-    return err
+    if err != nil {
+        return fmt.Errorf("failed to write UDP data: %w", err)
+    }
+    
+    return nil
 }
 
 // handleUDPResponses 处理UDP响应
