@@ -140,4 +140,264 @@ func (s *Server) cleanupUDPSessions() {
 }
 
 // handleConnection handles a client connection
-func
+func (s *Server) handleConnection(conn net.Conn) {
+    defer conn.Close()
+    
+    textConn := textproto.NewConn(conn)
+    
+    // 1. 发送初始SMTP服务就绪消息
+    if err := textConn.PrintfLine("220 %s ESMTP XSMTP Proxy Ready", s.config.MasqueradeHostname); err != nil {
+        log.Printf("Failed to send greeting: %v", err)
+        return
+    }
+    
+    // 2. 处理EHLO命令
+    cmd, err := textConn.ReadLine()
+    if err != nil {
+        log.Printf("Failed to read EHLO: %v", err)
+        return
+    }
+    if !strings.HasPrefix(strings.ToUpper(cmd), "EHLO ") {
+        textConn.PrintfLine("500 Error: Expected EHLO")
+        return
+    }
+    
+    // 发送EHLO响应
+    ehloResponses := []string{
+        fmt.Sprintf("250-%s", s.config.MasqueradeHostname),
+        "250-SIZE 20480000",
+        "250-AUTH PLAIN LOGIN CRAM-MD5",
+        "250-STARTTLS",
+        "250 8BITMIME",
+    }
+    for _, resp := range ehloResponses {
+        if err := textConn.PrintfLine(resp); err != nil {
+            log.Printf("Failed to send EHLO response: %v", err)
+            return
+        }
+    }
+    
+    // 3. 处理STARTTLS命令
+    cmd, err = textConn.ReadLine()
+    if err != nil {
+        log.Printf("Failed to read STARTTLS: %v", err)
+        return
+    }
+    if !strings.EqualFold(cmd, "STARTTLS") {
+        textConn.PrintfLine("500 Error: Expected STARTTLS")
+        return
+    }
+    
+    if err := textConn.PrintfLine("220 2.0.0 Ready to start TLS"); err != nil {
+        log.Printf("Failed to send STARTTLS response: %v", err)
+        return
+    }
+    
+    // 升级到TLS连接
+    tlsConn := tls.Server(conn, s.tlsConfig)
+    if err := tlsConn.Handshake(); err != nil {
+        log.Printf("TLS handshake failed: %v", err)
+        return
+    }
+    conn = tlsConn
+    textConn = textproto.NewConn(tlsConn)
+    
+    // 4. 处理TLS后的第二次EHLO
+    cmd, err = textConn.ReadLine()
+    if err != nil {
+        log.Printf("Failed to read second EHLO: %v", err)
+        return
+    }
+    if !strings.HasPrefix(strings.ToUpper(cmd), "EHLO ") {
+        textConn.PrintfLine("500 Error: Expected EHLO")
+        return
+    }
+    
+    // 发送第二次EHLO响应
+    for _, resp := range ehloResponses {
+        if err := textConn.PrintfLine(resp); err != nil {
+            log.Printf("Failed to send second EHLO response: %v", err)
+            return
+        }
+    }
+    
+    // 5. 处理AUTH命令
+    cmd, err = textConn.ReadLine()
+    if err != nil {
+        log.Printf("Failed to read AUTH: %v", err)
+        return
+    }
+    
+    // 支持PLAIN认证机制
+    if !strings.HasPrefix(strings.ToUpper(cmd), "AUTH PLAIN ") {
+        textConn.PrintfLine("504 Unrecognized authentication type")
+        return
+    }
+    
+    // 解码和验证凭证
+    authData := strings.TrimPrefix(cmd, "AUTH PLAIN ")
+    decoded, err := base64.StdEncoding.DecodeString(authData)
+    if err != nil {
+        textConn.PrintfLine("501 5.5.4 Syntax error in parameters")
+        return
+    }
+    
+    parts := strings.Split(string(decoded), "\x00")
+    if len(parts) != 3 || parts[1] != s.config.Username || parts[2] != s.config.Password {
+        textConn.PrintfLine("535 5.7.8 Authentication credentials invalid")
+        return
+    }
+    
+    // 认证成功
+    if err := textConn.PrintfLine("235 2.7.0 Authentication successful"); err != nil {
+        log.Printf("Failed to send AUTH success: %v", err)
+        return
+    }
+    
+    // 6. 进入XSMTP数据转发模式
+    s.handleXSMTPMode(conn)
+}
+
+// handleXSMTPMode 处理XSMTP数据转发模式
+func (s *Server) handleXSMTPMode(conn net.Conn) {
+    for {
+        // 读取消息类型
+        msgType, err := ReadVarint(conn)
+        if err != nil {
+            if err != io.EOF {
+                log.Printf("Failed to read message type: %v", err)
+            }
+            return
+        }
+        
+        switch msgType {
+        case TCPRequestType:
+            if err := s.handleTCPRequest(conn); err != nil {
+                log.Printf("Failed to handle TCP request: %v", err)
+                return
+            }
+            
+        case UDPMessageType:
+            if !s.config.UDPRelay {
+                // 如果UDP中继被禁用，则静默丢弃UDP消息
+                continue
+            }
+            if err := s.handleUDPMessage(conn); err != nil {
+                log.Printf("Failed to handle UDP message: %v", err)
+                return
+            }
+            
+        default:
+            log.Printf("Unknown message type: %d", msgType)
+            return
+        }
+    }
+}
+
+// handleTCPRequest 处理TCP代理请求
+func (s *Server) handleTCPRequest(conn net.Conn) error {
+    // 读取TCP请求
+    address, _, err := ReadTCPRequest(conn)
+    if err != nil {
+        WriteTCPResponse(conn, TCPStatusError, err.Error(), nil)
+        return err
+    }
+    
+    // 建立到目标的连接
+    target, err := net.Dial("tcp", address)
+    if err != nil {
+        WriteTCPResponse(conn, TCPStatusError, err.Error(), nil)
+        return err
+    }
+    defer target.Close()
+    
+    // 发送成功响应
+    if err := WriteTCPResponse(conn, TCPStatusOK, "", nil); err != nil {
+        return err
+    }
+    
+    // 开始双向数据转发
+    errCh := make(chan error, 2)
+    go func() {
+        _, err := io.Copy(target, conn)
+        errCh <- err
+    }()
+    go func() {
+        _, err := io.Copy(conn, target)
+        errCh <- err
+    }()
+    
+    // 等待任一方向完成
+    err = <-errCh
+    if err != nil && err != io.EOF {
+        return err
+    }
+    return nil
+}
+
+// handleUDPMessage 处理UDP消息
+func (s *Server) handleUDPMessage(conn net.Conn) error {
+    // 读取UDP消息
+    sessionID, packetID, fragmentID, fragmentCount, address, payload, err := ReadUDPMessage(conn)
+    if err != nil {
+        return err
+    }
+    
+    // 获取或创建UDP会话
+    s.udpMu.Lock()
+    session, exists := s.udpSessions[sessionID]
+    if !exists {
+        // 创建新的UDP连接
+        udpConn, err := net.ListenPacket("udp", "")
+        if err != nil {
+            s.udpMu.Unlock()
+            return err
+        }
+        
+        session = &udpSession{
+            conn:     udpConn,
+            lastUsed: time.Now(),
+        }
+        s.udpSessions[sessionID] = session
+        
+        // 启动UDP响应接收协程
+        go s.handleUDPResponses(sessionID, session, conn)
+    }
+    session.lastUsed = time.Now()
+    s.udpMu.Unlock()
+    
+    // 解析目标地址
+    targetAddr, err := net.ResolveUDPAddr("udp", address)
+    if err != nil {
+        return err
+    }
+    
+    // 发送数据
+    _, err = session.conn.WriteTo(payload, targetAddr)
+    return err
+}
+
+// handleUDPResponses 处理UDP响应
+func (s *Server) handleUDPResponses(sessionID uint32, session *udpSession, clientConn net.Conn) {
+    buffer := make([]byte, 65507) // 最大UDP包大小
+    packetID := uint16(0)
+    
+    for {
+        // 读取UDP响应
+        n, remoteAddr, err := session.conn.ReadFrom(buffer)
+        if err != nil {
+            log.Printf("Failed to read UDP response: %v", err)
+            return
+        }
+        
+        // 发送UDP消息到客户端
+        err = WriteUDPMessage(clientConn, sessionID, packetID, 0, 1,
+            remoteAddr.String(), buffer[:n])
+        if err != nil {
+            log.Printf("Failed to write UDP response: %v", err)
+            return
+        }
+        
+        packetID++
+    }
+}
