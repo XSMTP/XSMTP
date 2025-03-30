@@ -171,52 +171,45 @@ func TestServerStartStop(t *testing.T) {
 }
 
 func TestUDPSessionCleanup(t *testing.T) {
-	certFile, keyFile := createTestCert(t)
+    certFile, keyFile := createTestCert(t)
 
-	config := &ServerConfig{
-		Protocol:          "xsmtp",
-		ServerIP:          "127.0.0.1",
-		ServerPort:        0,
-		MasqueradeHostname: "smtp.gmail.com",
-		Username:          "test",
-		Password:          "test123",
-		UDPRelay:          true,
-	}
+    config := &ServerConfig{
+        Protocol:          "xsmtp",
+        ServerIP:          "127.0.0.1",
+        ServerPort:        0,
+        MasqueradeHostname: "smtp.gmail.com",
+        Username:          "test",
+        Password:          "test123",
+        UDPRelay:          true,
+    }
 
-	server, err := NewServer(config, certFile, keyFile)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+    server, err := NewServer(config, certFile, keyFile)
+    if err != nil {
+        t.Fatalf("NewServer() error = %v", err)
+    }
 
-	// 添加一些UDP会话
-	server.udpMu.Lock()
-	server.udpSessions[1] = &udpSession{
-		conn:     &mockPacketConn{},
-		lastUsed: time.Now().Add(-15 * time.Minute), // 过期会话
-	}
-	server.udpSessions[2] = &udpSession{
-		conn:     &mockPacketConn{},
-		lastUsed: time.Now(), // 活跃会话
-	}
-	server.udpMu.Unlock()
+    // 添加一些UDP会话
+    server.udpMu.Lock()
+    server.udpSessions[1] = &udpSession{
+        conn:     &mockPacketConn{},
+        lastUsed: time.Now().Add(-15 * time.Minute), // 过期会话
+    }
+    server.udpSessions[2] = &udpSession{
+        conn:     &mockPacketConn{},
+        lastUsed: time.Now(), // 活跃会话
+    }
+    server.udpMu.Unlock()
 
-	// 启动服务器（会启动清理协程）
-	if err := server.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+    // 手动触发清理
+    server.cleanupUDPSessions()
 
-	// 等待清理周期
-	time.Sleep(100 * time.Millisecond)
+    server.udpMu.Lock()
+    sessionCount := len(server.udpSessions)
+    server.udpMu.Unlock()
 
-	server.udpMu.Lock()
-	sessionCount := len(server.udpSessions)
-	server.udpMu.Unlock()
-
-	if sessionCount != 1 {
-		t.Errorf("UDP session cleanup failed, got %d sessions, want 1", sessionCount)
-	}
-
-	server.Stop()
+    if sessionCount != 1 {
+        t.Errorf("UDP session cleanup failed, got %d sessions, want 1", sessionCount)
+    }
 }
 
 // mockPacketConn 实现net.PacketConn接口用于测试
@@ -231,40 +224,102 @@ func (m *mockPacketConn) Close() error {
 }
 
 func TestServerHandleConnection(t *testing.T) {
-	certFile, keyFile := createTestCert(t)
+    certFile, keyFile := createTestCert(t)
 
-	config := &ServerConfig{
-		Protocol:          "xsmtp",
-		ServerIP:          "127.0.0.1",
-		ServerPort:        0,
-		MasqueradeHostname: "smtp.gmail.com",
-		Username:          "test",
-		Password:          "test123",
-		UDPRelay:          true,
-	}
+    config := &ServerConfig{
+        Protocol:          "xsmtp",
+        ServerIP:          "127.0.0.1",
+        ServerPort:        0,
+        MasqueradeHostname: "smtp.gmail.com",
+        Username:          "test",
+        Password:          "test123",
+        UDPRelay:          true,
+    }
 
-	server, err := NewServer(config, certFile, keyFile)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+    server, err := NewServer(config, certFile, keyFile)
+    if err != nil {
+        t.Fatalf("NewServer() error = %v", err)
+    }
 
-	if err := server.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer server.Stop()
+    if err := server.Start(); err != nil {
+        t.Fatalf("Start() error = %v", err)
+    }
+    defer server.Stop()
 
-	// 创建客户端配置
-	clientConfig := &tls.Config{
-		InsecureSkipVerify: true,
-	}
+    // 首先建立普通TCP连接
+    conn, err := net.Dial("tcp", server.listener.Addr().String())
+    if err != nil {
+        t.Fatalf("Failed to connect to server: %v", err)
+    }
+    defer conn.Close()
 
-	// 连接到服务器
-	conn, err := tls.Dial("tcp", server.listener.Addr().String(), clientConfig)
-	if err != nil {
-		t.Fatalf("Failed to connect to server: %v", err)
-	}
-	defer conn.Close()
+    // 创建文本协议连接
+    textConn := textproto.NewConn(conn)
 
-	// TODO: 实现完整的SMTP握手测试
-	// 这部分需要模拟完整的SMTP客户端行为
+    // 读取初始问候语
+    code, msg, err := textConn.ReadResponse(220)
+    if err != nil {
+        t.Fatalf("Failed to read greeting: %v", err)
+    }
+    if code != 220 {
+        t.Errorf("Unexpected greeting code: got %d, want 220", code)
+    }
+
+    // 发送 EHLO
+    id, err := textConn.Cmd("EHLO localhost")
+    if err != nil {
+        t.Fatalf("Failed to send EHLO: %v", err)
+    }
+    textConn.StartResponse(id)
+    code, msg, err = textConn.ReadResponse(250)
+    textConn.EndResponse(id)
+    if err != nil {
+        t.Fatalf("Failed to read EHLO response: %v", err)
+    }
+
+    // 发送 STARTTLS
+    id, err = textConn.Cmd("STARTTLS")
+    if err != nil {
+        t.Fatalf("Failed to send STARTTLS: %v", err)
+    }
+    textConn.StartResponse(id)
+    code, msg, err = textConn.ReadResponse(220)
+    textConn.EndResponse(id)
+    if err != nil {
+        t.Fatalf("Failed to read STARTTLS response: %v", err)
+    }
+
+    // 升级到TLS连接
+    tlsConn := tls.Client(conn, &tls.Config{
+        InsecureSkipVerify: true,
+    })
+    if err := tlsConn.Handshake(); err != nil {
+        t.Fatalf("TLS handshake failed: %v", err)
+    }
+
+    // 再次发送 EHLO
+    textConn = textproto.NewConn(tlsConn)
+    id, err = textConn.Cmd("EHLO localhost")
+    if err != nil {
+        t.Fatalf("Failed to send second EHLO: %v", err)
+    }
+    textConn.StartResponse(id)
+    code, msg, err = textConn.ReadResponse(250)
+    textConn.EndResponse(id)
+    if err != nil {
+        t.Fatalf("Failed to read second EHLO response: %v", err)
+    }
+
+    // 发送认证
+    auth := base64.StdEncoding.EncodeToString([]byte("\x00test\x00test123"))
+    id, err = textConn.Cmd("AUTH PLAIN %s", auth)
+    if err != nil {
+        t.Fatalf("Failed to send AUTH: %v", err)
+    }
+    textConn.StartResponse(id)
+    code, msg, err = textConn.ReadResponse(235)
+    textConn.EndResponse(id)
+    if err != nil {
+        t.Fatalf("Authentication failed: %v", err)
+    }
 }
