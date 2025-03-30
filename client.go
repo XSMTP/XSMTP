@@ -14,12 +14,13 @@ import (
 
 // Client represents an XSMTP client
 type Client struct {
-	config     *ClientConfig
-	conn       net.Conn
-	textConn   *textproto.Conn
-	udpCounter uint32
-	mu         sync.Mutex
-	isXSMTP    bool // Flag to indicate if we've switched to XSMTP mode
+    config     *ClientConfig
+    conn       net.Conn
+    textConn   *textprto.Conn
+    udpCounter uint32
+    mu         sync.Mutex
+    isXSMTP    bool // Flag to indicate if we've switched to XSMTP mode
+    ehloResp   string // 添加此字段存储最后一次EHLO响应
 }
 
 // NewClient creates a new XSMTP client with the given configuration
@@ -28,7 +29,6 @@ func NewClient(config *ClientConfig) *Client {
         config:     config,
         udpCounter: 0,
         isXSMTP:    false,
-        extensions: make(map[string]string),
     }
 }
 
@@ -125,57 +125,37 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// ehlo sends an EHLO command to the server and stores the extensions
+// ehlo sends an EHLO command to the server
 func (c *Client) ehlo() error {
     id, err := c.textConn.Cmd("EHLO localhost")
     if err != nil {
         return err
     }
-    
     c.textConn.StartResponse(id)
-    defer c.textConn.EndResponse(id)
-    
-    code, msg, err := c.textConn.ReadResponse(250)
+    _, msg, err := c.textConn.ReadResponse(250)
+    c.textConn.EndResponse(id)
     if err != nil {
         return err
     }
-    
-    // 清除旧的扩展
-    c.extensions = make(map[string]string)
-    
-    // 解析并存储扩展
-    for _, line := range strings.Split(msg, "\n") {
-        line = strings.TrimSpace(line)
-        if line == "" {
-            continue
-        }
-        
-        // 移除前缀
-        if strings.HasPrefix(line, "250-") {
-            line = line[4:]
-        } else if strings.HasPrefix(line, "250 ") {
-            line = line[4:]
-        } else {
-            continue
-        }
-        
-        // 分割扩展名和参数
-        parts := strings.SplitN(line, " ", 2)
-        if len(parts) == 1 {
-            c.extensions[parts[0]] = ""
-        } else {
-            c.extensions[parts[0]] = parts[1]
-        }
-    }
-    
+    // 存储EHLO响应
+    c.ehloResp = msg
     return nil
 }
 
 // hasExtension checks if the server supports a specific extension
 func (c *Client) hasExtension(ext string) bool {
-    _, exists := c.extensions[ext]
-    return exists
+    if c.ehloResp == "" {
+        return false
+    }
+    
+    for _, line := range strings.Split(c.ehloResp, "\n") {
+        if strings.HasPrefix(line, "250-"+ext) || strings.HasPrefix(line, "250 "+ext) {
+            return true
+        }
+    }
+    return false
 }
+
 
 // Connect connects to the XSMTP server, performs the SMTP handshake,
 // and authenticates using the provided credentials
