@@ -6,7 +6,8 @@ import (
     "fmt"
     "log"
     "os"
-    "path/filepath"
+    "os/signal"
+    "syscall"
 )
 
 var Version = "dev"
@@ -23,7 +24,7 @@ type configType struct {
     Password   string `json:"password"`
 }
 
-func main() {
+func Main() {
     // 解析命令行参数
     var (
         showVersion bool
@@ -61,7 +62,7 @@ func main() {
 
     if isServer {
         // 服务端模式
-        config, err := xsmtp.LoadServerConfig(configFile)
+        config, err := LoadServerConfig(configFile)
         if err != nil {
             log.Fatalf("Failed to load server config: %v", err)
         }
@@ -74,7 +75,7 @@ func main() {
             log.Fatalf("Private key file not found: %s", keyFile)
         }
 
-        server, err := xsmtp.NewServer(config, certFile, keyFile)
+        server, err := NewServer(config, certFile, keyFile)
         if err != nil {
             log.Fatalf("Failed to create server: %v", err)
         }
@@ -85,12 +86,12 @@ func main() {
         }
     } else {
         // 客户端模式
-        config, err := xsmtp.LoadClientConfig(configFile)
+        config, err := LoadClientConfig(configFile)
         if err != nil {
             log.Fatalf("Failed to load client config: %v", err)
         }
 
-        client := xsmtp.NewClient(config)
+        client := NewClient(config)
         log.Printf("Starting XSMTP client v%s, connecting to %s:%d", Version, config.ServerIP, config.ServerPort)
         
         if err := client.Connect(); err != nil {
