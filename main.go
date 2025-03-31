@@ -1,7 +1,6 @@
 package xsmtp
 
 import (
-    "encoding/json"
     "flag"
     "fmt"
     "log"
