@@ -221,30 +221,63 @@ func (s *Server) handleConnection(conn net.Conn) {
         }
     }
     
-    // 5. 处理AUTH命令
+     // 5. 处理AUTH命令
     cmd, err = textConn.ReadLine()
     if err != nil {
         log.Printf("Failed to read AUTH: %v", err)
         return
     }
     
-    // 支持PLAIN认证机制
-    if !strings.HasPrefix(strings.ToUpper(cmd), "AUTH PLAIN ") {
+    // 解析认证类型和参数
+    authParts := strings.Fields(cmd)
+    if len(authParts) < 2 || authParts[0] != "AUTH" {
+        textConn.PrintfLine("500 Error: Expected AUTH command")
+        return
+    }
+
+    authType := strings.ToUpper(authParts[1])
+    switch authType {
+    case "PLAIN":
+        // 处理 PLAIN 认证
+        var authData string
+        if len(authParts) > 2 {
+            // 认证数据包含在命令中
+            authData = authParts[2]
+        } else {
+            // 需要等待客户端发送认证数据
+            if err := textConn.PrintfLine("334 "); err != nil {
+                log.Printf("Failed to send PLAIN continue: %v", err)
+                return
+            }
+            authData, err = textConn.ReadLine()
+            if err != nil {
+                log.Printf("Failed to read PLAIN auth data: %v", err)
+                return
+            }
+        }
+
+        // 验证 PLAIN 认证
+        if err := s.handlePlainAuth(textConn, authData); err != nil {
+            log.Printf("PLAIN authentication failed: %v", err)
+            return
+        }
+
+    case "LOGIN":
+        // 处理 LOGIN 认证
+        if err := s.handleLoginAuth(textConn); err != nil {
+            log.Printf("LOGIN authentication failed: %v", err)
+            return
+        }
+
+    case "CRAM-MD5":
+        // 处理 CRAM-MD5 认证
+        if err := s.handleCRAMMD5Auth(textConn); err != nil {
+            log.Printf("CRAM-MD5 authentication failed: %v", err)
+            return
+        }
+
+    default:
         textConn.PrintfLine("504 Unrecognized authentication type")
-        return
-    }
-    
-    // 解码和验证凭证
-    authData := strings.TrimPrefix(cmd, "AUTH PLAIN ")
-    decoded, err := base64.StdEncoding.DecodeString(authData)
-    if err != nil {
-        textConn.PrintfLine("501 5.5.4 Syntax error in parameters")
-        return
-    }
-    
-    parts := strings.Split(string(decoded), "\x00")
-    if len(parts) != 3 || parts[1] != s.config.Username || parts[2] != s.config.Password {
-        textConn.PrintfLine("535 5.7.8 Authentication credentials invalid")
         return
     }
     
@@ -253,7 +286,7 @@ func (s *Server) handleConnection(conn net.Conn) {
         log.Printf("Failed to send AUTH success: %v", err)
         return
     }
-    
+	
     // 6. 进入XSMTP数据转发模式
     s.handleXSMTPMode(conn)
 }
