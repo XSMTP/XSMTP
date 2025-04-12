@@ -2,6 +2,7 @@ package xsmtp
 
 import (
     "encoding/base64"
+    "time"
     "errors"
     "fmt"
     "net/textproto"
