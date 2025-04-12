@@ -1,6 +1,8 @@
 package xsmtp
 
 import (
+	"crypto/hmac"
+        "crypto/md5"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
