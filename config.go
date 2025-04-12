@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"string"
+	"strings"
 	"fmt"
 )
-
-// config.go
 
 // ClientConfig represents the XSMTP client configuration
 type ClientConfig struct {
