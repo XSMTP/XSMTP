@@ -2,7 +2,6 @@ package xsmtp
 
 import (
 	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
