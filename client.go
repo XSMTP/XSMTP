@@ -1,6 +1,8 @@
 package xsmtp
 
 import (
+	"crypto/hmac"
+        "crypto/md5"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -63,6 +65,108 @@ func (c *Client) hasExtension(ext string) bool {
     return false
 }
 
+// authPlain performs PLAIN authentication
+func (c *Client) authPlain() error {
+    auth := base64.StdEncoding.EncodeToString([]byte("\x00"+c.config.Username+"\x00"+c.config.Password))
+    id, err := c.textConn.Cmd("AUTH PLAIN %s", auth)
+    if err != nil {
+        return fmt.Errorf("failed to send AUTH PLAIN command: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, _, err := c.textConn.ReadResponse(235)
+    c.textConn.EndResponse(id)
+    if err != nil || code != 235 {
+        return fmt.Errorf("AUTH PLAIN failed: %w", err)
+    }
+    return nil
+}
+
+// authLogin performs LOGIN authentication
+func (c *Client) authLogin() error {
+    // Send AUTH LOGIN command
+    id, err := c.textConn.Cmd("AUTH LOGIN")
+    if err != nil {
+        return fmt.Errorf("failed to send AUTH LOGIN command: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, _, err := c.textConn.ReadResponse(334)
+    c.textConn.EndResponse(id)
+    if err != nil || code != 334 {
+        return fmt.Errorf("AUTH LOGIN failed at step 1: %w", err)
+    }
+
+    // Send username
+    id, err = c.textConn.Cmd(base64.StdEncoding.EncodeToString([]byte(c.config.Username)))
+    if err != nil {
+        return fmt.Errorf("failed to send username: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, _, err = c.textConn.ReadResponse(334)
+    c.textConn.EndResponse(id)
+    if err != nil || code != 334 {
+        return fmt.Errorf("AUTH LOGIN failed at step 2: %w", err)
+    }
+
+    // Send password
+    id, err = c.textConn.Cmd(base64.StdEncoding.EncodeToString([]byte(c.config.Password)))
+    if err != nil {
+        return fmt.Errorf("failed to send password: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, _, err = c.textConn.ReadResponse(235)
+    c.textConn.EndResponse(id)
+    if err != nil || code != 235 {
+        return fmt.Errorf("AUTH LOGIN failed at step 3: %w", err)
+    }
+
+    return nil
+}
+
+// computeCRAMMD5 calculates the CRAM-MD5 response
+func (c *Client) computeCRAMMD5(challenge, username, password string) string {
+    h := hmac.New(md5.New, []byte(password))
+    h.Write([]byte(challenge))
+    digest := fmt.Sprintf("%x", h.Sum(nil))
+    return fmt.Sprintf("%s %s", username, digest)
+}
+
+// authCRAMMD5 performs CRAM-MD5 authentication
+func (c *Client) authCRAMMD5() error {
+    // Send AUTH CRAM-MD5 command
+    id, err := c.textConn.Cmd("AUTH CRAM-MD5")
+    if err != nil {
+        return fmt.Errorf("failed to send AUTH CRAM-MD5 command: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, msg, err := c.textConn.ReadResponse(334)
+    c.textConn.EndResponse(id)
+    if err != nil || code != 334 {
+        return fmt.Errorf("AUTH CRAM-MD5 failed at step 1: %w", err)
+    }
+
+    // Decode challenge
+    challenge, err := base64.StdEncoding.DecodeString(msg)
+    if err != nil {
+        return fmt.Errorf("failed to decode CRAM-MD5 challenge: %w", err)
+    }
+
+    // Calculate response
+    response := c.computeCRAMMD5(string(challenge), c.config.Username, c.config.Password)
+    
+    // Send response
+    id, err = c.textConn.Cmd(base64.StdEncoding.EncodeToString([]byte(response)))
+    if err != nil {
+        return fmt.Errorf("failed to send CRAM-MD5 response: %w", err)
+    }
+    c.textConn.StartResponse(id)
+    code, _, err = c.textConn.ReadResponse(235)
+    c.textConn.EndResponse(id)
+    if err != nil || code != 235 {
+        return fmt.Errorf("AUTH CRAM-MD5 failed at step 2: %w", err)
+    }
+
+    return nil
+}
 
 // Connect connects to the XSMTP server, performs the SMTP handshake,
 // and authenticates using the provided credentials
@@ -137,20 +241,31 @@ func (c *Client) Connect() error {
         c.conn.Close()
         return errors.New("server does not support AUTH")
     }
-    
-    // Authenticate using PLAIN
-    auth := base64.StdEncoding.EncodeToString([]byte("\x00"+c.config.Username+"\x00"+c.config.Password))
-    id, err = c.textConn.Cmd("AUTH PLAIN %s", auth)
-    if err != nil {
+
+    // 检查服务器是否支持指定的认证方式
+    authMethod := strings.ToUpper(c.config.Auth)
+    if !c.hasExtension("AUTH " + authMethod) {
         c.conn.Close()
-        return fmt.Errorf("failed to send AUTH command: %w", err)
+        return fmt.Errorf("server does not support %s authentication", authMethod)
     }
-    c.textConn.StartResponse(id)
-    code, msg, err = c.textConn.ReadResponse(235)
-    c.textConn.EndResponse(id)
-    if err != nil {
+    
+    // 根据配置的认证方式进行认证
+    var authErr error
+    switch strings.ToLower(c.config.Auth) {
+    case "plain":
+        authErr = c.authPlain()
+    case "login":
+        authErr = c.authLogin()
+    case "cram-md5":
+        authErr = c.authCRAMMD5()
+    default:
         c.conn.Close()
-        return fmt.Errorf("authentication failed: %w", err)
+        return fmt.Errorf("unsupported authentication method: %s", c.config.Auth)
+    }
+
+    if authErr != nil {
+        c.conn.Close()
+        return fmt.Errorf("authentication failed: %w", authErr)
     }
     
     // Now we're authenticated and in XSMTP Data Forwarding Mode
