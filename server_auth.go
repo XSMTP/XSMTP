@@ -1,6 +1,11 @@
 package xsmtp
 
 import (
+    "encoding/base64"
+    "errors"
+    "fmt"
+    "net/textproto"
+    "strings"
     "crypto/hmac"
     "crypto/md5"
     "os"
