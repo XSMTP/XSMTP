@@ -54,14 +54,14 @@ XSMTP (eXtended SMTPS Proxy) is a lightweight proxy protocol designed to circumv
     *   Create a `client-config.json` file with the following structure (example):
 
     ```json
-{
-  "protocol": "xsmtp",
-  "server_ip": "your_xsmtp_server_ip",
-  "server_port": 587,
-  “auth”: "plain"(or "login" or others)
-  "username": "xsmtp_user",
-  "password": "xsmtp_password"
-}
+    {
+      "protocol": "xsmtp",
+      "server_ip": "your_xsmtp_server_ip",
+      "server_port": 587,
+      “auth”: "plain"(or "login" or others)
+      "username": "xsmtp_user",
+      "password": "xsmtp_password"
+    }
     ```
 
     *   **Configuration Field Descriptions:**
