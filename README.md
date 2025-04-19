@@ -58,7 +58,7 @@ XSMTP (eXtended SMTPS Proxy) is a lightweight proxy protocol designed to circumv
       "protocol": "xsmtp",
       "server_ip": "your_xsmtp_server_ip",
       "server_port": 587,
-      “auth”: "plain"(or "login" or others)
+      “auth”: "plain"(or "login" or others),
       "username": "xsmtp_user",
       "password": "xsmtp_password"
     }
