@@ -208,7 +208,7 @@ XSMTP client and server configurations **MUST** follow the JSON format.
   "protocol": "xsmtp",
   "server_ip": "your_xsmtp_server_ip",
   "server_port": 587,
-  “auth”: "plain"(or "login" or others)
+  “auth”: "plain",
   "username": "xsmtp_user",
   "password": "xsmtp_password"
 }
