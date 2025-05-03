@@ -32,7 +32,8 @@ func (s *Server) handlePlainAuth(textConn *textproto.Conn, authData string) erro
 // 处理 LOGIN 认证
 func (s *Server) handleLoginAuth(textConn *textproto.Conn) error {
     // 请求用户名
-    if err := textConn.PrintfLine("334 " + base64.StdEncoding.EncodeToString([]byte("Username:"))); err != nil {
+    usernamePrompt := base64.StdEncoding.EncodeToString([]byte("Username:"))
+    if err := textConn.PrintfLine("334 %s", usernamePrompt); err != nil {
         return fmt.Errorf("failed to send username prompt: %w", err)
     }
     
@@ -48,7 +49,8 @@ func (s *Server) handleLoginAuth(textConn *textproto.Conn) error {
     }
     
     // 请求密码
-    if err := textConn.PrintfLine("334 " + base64.StdEncoding.EncodeToString([]byte("Password:"))); err != nil {
+    passwordPrompt := base64.StdEncoding.EncodeToString([]byte("Password:"))
+    if err := textConn.PrintfLine("334 %s", passwordPrompt); err != nil {
         return fmt.Errorf("failed to send password prompt: %w", err)
     }
     
@@ -78,7 +80,8 @@ func (s *Server) handleCRAMMD5Auth(textConn *textproto.Conn) error {
     challenge := fmt.Sprintf("<%d.%d@%s>", time.Now().UnixNano(), os.Getpid(), s.config.MasqueradeHostname)
     
     // 发送挑战
-    if err := textConn.PrintfLine("334 " + base64.StdEncoding.EncodeToString([]byte(challenge))); err != nil {
+    challengeB64 := base64.StdEncoding.EncodeToString([]byte(challenge))
+    if err := textConn.PrintfLine("334 %s", challengeB64); err != nil {
         return fmt.Errorf("failed to send challenge: %w", err)
     }
     
