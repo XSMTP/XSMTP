@@ -1,7 +1,5 @@
 # XSMTP Proxy Protocol
 
-note: The "dev" branch is under heavy development. Use at your own risk.
-
 ## Introduction
 
 XSMTP (eXtended SMTPS Proxy) is a lightweight proxy protocol designed to circumvent network censorship by masquerading as legitimate SMTPS (SMTP over TLS) traffic. It establishes a connection that initially resembles a standard SMTPS session, complete with TLS encryption and SMTP authentication, before transitioning into a data forwarding mode for general-purpose proxying. This masquerading technique aims to make XSMTP traffic blend in with regular email communication, thus evading detection and blocking by censorship systems that might be looking for proxy-specific signatures.
