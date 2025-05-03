@@ -208,6 +208,7 @@ XSMTP client and server configurations **MUST** follow the JSON format.
   "protocol": "xsmtp",
   "server_ip": "your_xsmtp_server_ip",
   "server_port": 587,
+  "auth": "login",
   "username": "xsmtp_user",
   "password": "xsmtp_password"
 }
@@ -218,6 +219,7 @@ XSMTP client and server configurations **MUST** follow the JSON format.
 *   `protocol`:  **MUST** be `"xsmtp"`.
 *   `server_ip`:  **MUST**, XSMTP server IP address.
 *   `server_port`: **MUST**, XSMTP server port number.
+*   `auth`: **MUST**, the method of auth.
 *   `username`:  **MUST**, SMTP AUTH authentication username.
 *   `password`:  **MUST**, SMTP AUTH authentication password.
 
