@@ -1,40 +1,100 @@
-name: Release
-on:
-  release:
-    types: [published]
+name: Release XSMTP
 
-permissions:
-  contents: write
-  packages: write
+on:
+  push:
+    tags:
+      - 'v*' # 触发标签格式为 v1.0.0 这样的版本号
 
 jobs:
-  releases-matrix:
-    name: Release Go Binary
+  release:
+    name: Create Release
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux]
-        goarch: ["386", amd64, arm, arm64, ppc64le, mips, mips64, mipsle, mips64le, s390x]
-        go-version: ["1.24"]
-
+    permissions:
+      contents: write
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.21'
+          cache: true
 
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+      - name: Get version
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build for multiple platforms
         run: |
-          mkdir -p build
-          go build -o build/XSMTP-${GOOS}-${GOARCH}-go${{ matrix.go-version }} -ldflags "-s -w" .
+          mkdir -p bin
+          
+          # Linux
+          GOOS=linux GOARCH=amd64 go build -o bin/xsmtp-linux-amd64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+          GOOS=linux GOARCH=arm64 go build -o bin/xsmtp-linux-arm64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
 
-      - name: Upload
-        uses: softprops/action-gh-release@v2
+          # Windows
+          GOOS=windows GOARCH=amd64 go build -o bin/xsmtp-windows-amd64.exe -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+          GOOS=windows GOARCH=arm64 go build -o bin/xsmtp-windows-arm64.exe -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+
+          # macOS
+          GOOS=darwin GOARCH=amd64 go build -o bin/xsmtp-darwin-amd64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+          GOOS=darwin GOARCH=arm64 go build -o bin/xsmtp-darwin-arm64 -ldflags="-X github.com/XSMTP/XSMTP.Version=${{ steps.get_version.outputs.version }}" ./cmd/main.go
+
+          # Create zip archives
+          cd bin
+          for file in *; do
+            if [ -f "$file" ]; then
+              zip "${file}.zip" "$file"
+            fi
+          done
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: build/*
+          name: XSMTP ${{ steps.get_version.outputs.version }}
+          tag_name: ${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: false
+          body: |
+            XSMTP Release ${{ steps.get_version.outputs.version }}
+            Release Date: ${{ steps.date.outputs.date }}
+
+            ### 包含内容:
+            - XSMTP 服务端程序
+            - XSMTP 客户端程序
+            - 支持的平台: Windows, Linux, macOS
+            - 支持的架构: x86_64 (amd64), ARM64
+
+            ### 下载说明:
+            - Windows用户选择 .exe.zip 结尾的文件
+            - Linux用户选择 linux-* 的文件
+            - macOS用户选择 darwin-* 的文件
+            - ARM设备选择 arm64 的文件
+            - x86_64设备选择 amd64 的文件
+
+            ### 文件校验:
+            所有文件的 SHA256 校验和可在 SHA256SUMS.txt 中查看
+          files: |
+            bin/*.zip
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd bin
+          sha256sum *.zip > SHA256SUMS.txt
+
+      - name: Upload SHA256SUMS
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: bin/SHA256SUMS.txt
+          tag_name: ${{ steps.get_version.outputs.version }}
